@@ -20,6 +20,9 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(require("./routes/branchRoutes"));
 app.use(require("./routes/csoRoutes"));
 app.use(require("./routes/loanRoutes"));
+app.use(require("./routes/holidayRoutes"));
+app.use(require("./routes/adminPanelRoutes"));
+app.use(require("./routes/expenseRoutes"));
 app.use(require('./routes/uploadRoutes'));
 
 // Error handling

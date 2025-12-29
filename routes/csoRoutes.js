@@ -3,10 +3,12 @@ const jwt = require("jsonwebtoken");
 const CSO = require("../models/cso");
 const Cso = require("../models/cso");
 const Loan = require("../models/loan");
+const GroupLeader = require("../models/groupLeader");
 const authenticateCso = require("../middleware/authenticateCso");
+const jwtSecret = require("../config/jwtSecret");
 
 function generateToken(cso) {
-  return jwt.sign({ id: cso._id, email: cso.email }, process.env.JWT_SECRET, {
+  return jwt.sign({ id: cso._id, email: cso.email }, jwtSecret, {
     expiresIn: "7d",
   });
 }
@@ -101,10 +103,32 @@ router.post("/api/csos/forgot-password", async (req, res) => {
 });
 
 // Retrieve all CSOs
-router.get("/api/csos", async (_req, res) => {
+router.get("/api/csos", async (req, res) => {
   try {
-    const csos = await CSO.find().sort({ createdAt: -1 });
-    return res.json(csos);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(
+      100,
+      Math.max(1, parseInt(req.query.limit, 10) || 20)
+    );
+    const skip = (page - 1) * limit;
+
+    const { branchId } = req.query;
+    const query = branchId ? { branchId } : {};
+
+    const [csos, total] = await Promise.all([
+      CSO.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      CSO.countDocuments(query),
+    ]);
+
+    return res.json({
+      data: csos,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     return res.status(500).json({ message: "Unable to fetch CSOs" });
   }
@@ -253,6 +277,7 @@ router.get("/api/csos/collection", authenticateCso, async (req, res) => {
       }
 
       records.push({
+        loanMongoId: loan._id,
         loanId: loan.loanId,
         loanStatus: loan.status,
         customerName: [
@@ -439,6 +464,50 @@ router.patch("/api/csos/:id/status", async (req, res) => {
     return res
       .status(400)
       .json({ message: error.message || "Unable to update CSO status" });
+  }
+});
+
+// Transfer CSO to a new branch
+router.patch("/api/csos/:id/transfer-branch", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { branch, branchId } = req.body;
+
+    if (!branch || !branchId) {
+      return res
+        .status(400)
+        .json({ message: "Branch name and ID are required" });
+    }
+
+    const cso = await CSO.findByIdAndUpdate(
+      id,
+      { $set: { branch, branchId } },
+      { new: true, runValidators: true }
+    );
+
+    if (!cso) {
+      return res.status(404).json({ message: "CSO not found" });
+    }
+
+    // Update all loans associated with this CSO
+    await Loan.updateMany(
+      { csoId: id },
+      {
+        $set: {
+          branch: branch,
+          branchId: branchId,
+        },
+      }
+    );
+
+    return res.json({
+      message: "CSO and all associated loans transferred successfully",
+      cso,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: error.message || "Unable to transfer CSO branch" });
   }
 });
 
@@ -686,5 +755,212 @@ router.post("/api/csos/:id/resolve-remittance", async (req, res) => {
     res.status(500).json({ message: "Server error resolving remittance" });
   }
 });
+
+// Create a new group leader
+router.post("/api/group-leaders", authenticateCso, async (req, res) => {
+  try {
+    const { groupName, firstName, lastName, address, phone } = req.body;
+
+    if (!groupName || !firstName || !lastName || !address || !phone) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    const cso = await CSO.findById(req.cso._id);
+    if (!cso) {
+      return res.status(404).json({ message: "CSO not found" });
+    }
+
+    const groupLeader = await GroupLeader.create({
+      groupName,
+      firstName,
+      lastName,
+      address,
+      phone,
+      csoId: req.cso._id,
+      csoName: `${cso.firstName} ${cso.lastName}`,
+    });
+
+    res.status(201).json(groupLeader);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ message: "Phone number already exists" });
+    }
+    return res
+      .status(400)
+      .json({ message: error.message || "Unable to create group leader" });
+  }
+});
+
+// Get all group leaders (for admin)
+router.get("/api/group-leaders", async (req, res) => {
+  try {
+    const { csoId } = req.query;
+    const query = csoId ? { csoId } : {};
+    const groupLeaders = await GroupLeader.find(query).sort({ createdAt: -1 });
+    res.json(groupLeaders);
+  } catch (error) {
+    res
+      .status(400)
+      .json({ message: error.message || "Unable to fetch group leaders" });
+  }
+});
+
+// Approve group leader
+router.put("/api/group-leaders/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const groupLeader = await GroupLeader.findByIdAndUpdate(
+      id,
+      { status: "approved" },
+      { new: true, runValidators: true }
+    );
+
+    if (!groupLeader) {
+      return res.status(404).json({ message: "Group leader not found" });
+    }
+
+    res.json(groupLeader);
+  } catch (error) {
+    res
+      .status(400)
+      .json({ message: error.message || "Unable to approve group leader" });
+  }
+});
+
+// Update group leader
+router.put("/api/group-leaders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { groupName, firstName, lastName, address, phone } = req.body;
+
+    const groupLeader = await GroupLeader.findByIdAndUpdate(
+      id,
+      { groupName, firstName, lastName, address, phone },
+      { new: true, runValidators: true }
+    );
+
+    if (!groupLeader) {
+      return res.status(404).json({ message: "Group leader not found" });
+    }
+
+    res.json(groupLeader);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ message: "Phone number already exists" });
+    }
+    res
+      .status(400)
+      .json({ message: error.message || "Unable to update group leader" });
+  }
+});
+
+// Delete group leader
+router.delete("/api/group-leaders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const groupLeader = await GroupLeader.findByIdAndDelete(id);
+
+    if (!groupLeader) {
+      return res.status(404).json({ message: "Group leader not found" });
+    }
+
+    res.json({ message: "Group leader deleted successfully" });
+  } catch (error) {
+    res
+      .status(400)
+      .json({ message: error.message || "Unable to delete group leader" });
+  }
+});
+
+// Transfer group leader to a new CSO
+router.post("/api/group-leaders/:id/transfer-cso", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newCsoId } = req.body;
+
+    if (!newCsoId) {
+      return res.status(400).json({ message: "New CSO ID is required" });
+    }
+
+    // Fetch the group leader
+    const groupLeader = await GroupLeader.findById(id);
+    if (!groupLeader) {
+      return res.status(404).json({ message: "Group leader not found" });
+    }
+
+    // Fetch the new CSO details
+    const newCso = await CSO.findById(newCsoId);
+    if (!newCso) {
+      return res.status(404).json({ message: "New CSO not found" });
+    }
+
+    // Update the group leader
+    groupLeader.csoId = newCsoId;
+    groupLeader.csoName = `${newCso.firstName} ${newCso.lastName}`;
+    await groupLeader.save();
+
+    // Update all loans under this group
+    const Loan = require("../models/loan");
+    const updateResult = await Loan.updateMany(
+      { "groupDetails.groupId": id },
+      {
+        $set: {
+          csoId: newCsoId,
+          csoName: `${newCso.firstName} ${newCso.lastName}`,
+          csoSignature: newCso.signature || "",
+          branch: newCso.branch || "",
+          branchId: newCso.branchId || "",
+        },
+      }
+    );
+
+    res.json({
+      message: "Group transferred successfully",
+      groupLeader,
+      loansTransferred: updateResult.modifiedCount,
+    });
+  } catch (error) {
+    console.error("Error transferring group:", error);
+    res
+      .status(500)
+      .json({ message: error.message || "Unable to transfer group" });
+  }
+});
+
+// Get group leaders for a specific CSO (admin access)
+router.get("/api/csos/:id/group-leaders", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const groupLeaders = await GroupLeader.find({
+      csoId: id,
+      status: "approved",
+    }).sort({ groupName: 1 });
+    res.json(groupLeaders);
+  } catch (error) {
+    res
+      .status(400)
+      .json({ message: error.message || "Unable to fetch group leaders" });
+  }
+});
+router.get(
+  "/api/group-leaders/my-approved",
+  authenticateCso,
+  async (req, res) => {
+    try {
+      const groupLeaders = await GroupLeader.find({
+        csoId: req.cso._id,
+        status: "approved",
+      }).sort({ createdAt: -1 });
+
+      return res.json(groupLeaders);
+    } catch (error) {
+      return res
+        .status(400)
+        .json({ message: error.message || "Unable to fetch group leaders" });
+    }
+  }
+);
 
 module.exports = router;

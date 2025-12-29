@@ -388,6 +388,7 @@ function buildLoanPayload(body, cso) {
     loanDetails = {},
     guarantorDetails,
     guarantorFormPic,
+    groupDetails,
     pictures,
   } = body || {};
 
@@ -419,6 +420,7 @@ function buildLoanPayload(body, cso) {
     csoId: cso._id,
     csoSignature: cso.signature || null,
     branch: cso.branch || "",
+    branchId: cso.branchId || "",
     csoName: [cso.firstName, cso.lastName].filter(Boolean).join(" "),
     loanId: loanId || generateLoanId(),
     customerDetails,
@@ -426,6 +428,7 @@ function buildLoanPayload(body, cso) {
     bankDetails,
     loanDetails: derivedLoanDetails,
     guarantorDetails,
+    groupDetails: groupDetails || {},
     guarantorFormPic: guarantorFormPic || null,
     pictures: pictures || {},
     status: "waiting for approval",
@@ -1591,6 +1594,221 @@ router.get("/api/admin/customers", async (req, res) => {
     return res
       .status(500)
       .json({ message: "Unable to fetch customer summary" });
+  }
+});
+
+// Fetch all loans for a specific customer (Admin)
+router.get("/api/admin/customers/:bvn/loans", async (req, res) => {
+  try {
+    const bvn = req.params.bvn ? String(req.params.bvn).trim() : "";
+
+    if (!bvn) {
+      return res.status(400).json({ message: "Customer BVN is required" });
+    }
+
+    const loans = await Loan.find({ "customerDetails.bvn": bvn })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formattedLoans = loans.map((loan) => {
+      const customer = loan.customerDetails || {};
+      const loanDetails = loan.loanDetails || {};
+      const paymentsArray = Array.isArray(loanDetails.dailyPayment)
+        ? loanDetails.dailyPayment
+        : [];
+
+      const startDate = loan.disbursedAt || loan.createdAt || null;
+
+      let endDate = null;
+      if (loan.status === "fully paid" && paymentsArray.length > 0) {
+        const lastPayment = paymentsArray.reduce((latest, payment) => {
+          if (!payment?.date) {
+            return latest;
+          }
+          const paymentDate = new Date(payment.date);
+          if (!latest) {
+            return paymentDate;
+          }
+          return paymentDate > latest ? paymentDate : latest;
+        }, null);
+        endDate = lastPayment || startDate;
+      } else if (startDate) {
+        const computed = new Date(startDate);
+        computed.setDate(computed.getDate() + 30);
+        endDate = computed;
+      }
+
+      const amountToBePaid = Number(loanDetails.amountToBePaid) || 0;
+      const amountPaidSoFar = Number(loanDetails.amountPaidSoFar) || 0;
+      const balance = Math.max(amountToBePaid - amountPaidSoFar, 0);
+
+      return {
+        id: loan._id,
+        loanId: loan.loanId,
+        customerName: [customer.firstName, customer.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .trim(),
+        amountToBePaid,
+        amountPaidSoFar,
+        balance,
+        startDate: startDate ? new Date(startDate).toISOString() : null,
+        endDate: endDate ? new Date(endDate).toISOString() : null,
+        status: loan.status,
+        loanType: loanDetails.loanType || "daily",
+        dailyPayment: paymentsArray
+          .filter((payment) => payment?.date)
+          .map((payment) => ({
+            date: new Date(payment.date).toISOString(),
+            amount: Number(payment.amount) || 0,
+          })),
+      };
+    });
+
+    return res.json({
+      bvn,
+      customerName:
+        formattedLoans[0]?.customerName || loans[0]?.customerDetails?.firstName
+          ? [
+              loans[0]?.customerDetails?.firstName,
+              loans[0]?.customerDetails?.lastName,
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .trim()
+          : "",
+      loans: formattedLoans,
+    });
+  } catch (error) {
+    console.error("Failed to fetch customer loans:", error);
+    return res
+      .status(500)
+      .json({ message: error.message || "Unable to fetch customer loans" });
+  }
+});
+
+// Fetch the most recent customer submission details (Admin)
+router.get("/api/admin/customers/:bvn/details", async (req, res) => {
+  try {
+    const bvn = req.params.bvn ? String(req.params.bvn).trim() : "";
+
+    if (!bvn) {
+      return res.status(400).json({ message: "Customer BVN is required" });
+    }
+
+    const latestLoan = await Loan.findOne({ "customerDetails.bvn": bvn })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!latestLoan) {
+      return res.status(404).json({ message: "No customer records found" });
+    }
+
+    return res.json({
+      bvn,
+      loanId: latestLoan.loanId,
+      createdAt: latestLoan.createdAt,
+      updatedAt: latestLoan.updatedAt,
+      customerDetails: latestLoan.customerDetails || {},
+      businessDetails: latestLoan.businessDetails || {},
+      bankDetails: latestLoan.bankDetails || {},
+      guarantorDetails: latestLoan.guarantorDetails || {},
+      loanDetails: latestLoan.loanDetails || {},
+      groupDetails: latestLoan.groupDetails || {},
+      pictures: latestLoan.pictures || {},
+      csoDetails: {
+        id: latestLoan.csoId || "",
+        name: latestLoan.csoName || "",
+        branch: latestLoan.branch || "",
+        signature: latestLoan.csoSignature || "",
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch customer details:", error);
+    return res
+      .status(500)
+      .json({ message: error.message || "Unable to fetch customer details" });
+  }
+});
+
+// Get customers (loans) for a specific CSO
+router.get("/api/loans/cso/:csoId/customers", async (req, res) => {
+  try {
+    const { csoId } = req.params;
+    const { search, groupId } = req.query;
+
+    const query = {
+      csoId,
+      status: { $in: ["active loan", "fully paid", "approved"] },
+    };
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      query.$or = [
+        { "customerDetails.firstName": searchRegex },
+        { "customerDetails.lastName": searchRegex },
+        { "customerDetails.bvn": searchRegex },
+      ];
+    }
+
+    if (groupId) {
+      if (groupId === "ungrouped") {
+        query["groupDetails.groupId"] = { $exists: false };
+      } else {
+        query["groupDetails.groupId"] = groupId;
+      }
+    }
+
+    const loans = await Loan.find(query)
+      .select("loanId customerDetails loanDetails groupDetails status")
+      .sort({ "customerDetails.firstName": 1 });
+
+    res.json(loans);
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: error.message || "Unable to fetch customers" });
+  }
+});
+
+// Bulk assign customers to a group
+router.post("/api/loans/assign-group", async (req, res) => {
+  try {
+    const { loanIds, groupLeaderId } = req.body;
+
+    if (!Array.isArray(loanIds) || loanIds.length === 0) {
+      return res.status(400).json({ message: "No customers selected" });
+    }
+
+    if (!groupLeaderId) {
+      return res.status(400).json({ message: "Group leader is required" });
+    }
+
+    const GroupLeader = require("../models/groupLeader"); // Dynamic import to avoid circular dependency issues if any
+    const groupLeader = await GroupLeader.findById(groupLeaderId);
+
+    if (!groupLeader) {
+      return res.status(404).json({ message: "Group leader not found" });
+    }
+
+    const groupDetails = {
+      groupName: groupLeader.groupName,
+      leaderName: `${groupLeader.firstName} ${groupLeader.lastName}`,
+      address: groupLeader.address,
+      groupId: groupLeader._id,
+      mobileNo: groupLeader.phone,
+    };
+
+    await Loan.updateMany(
+      { _id: { $in: loanIds } },
+      { $set: { groupDetails } }
+    );
+
+    res.json({ message: "Customers transferred successfully" });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: error.message || "Unable to transfer customers" });
   }
 });
 

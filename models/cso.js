@@ -1,85 +1,86 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
-const csoSchema = new mongoose.Schema({
-  firstName: { type: String, required: true },
-  lastName: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  phone: { type: String, required: true },
-  branch: { type: String, required: true },
-  address: { type: String, required: true },
-  workId: { type: String, required: true },
-  password: { type: String, select: false },
-  guaratorName: { type: String, required: true },
-  guaratorAddress: { type: String, required: true },
-  guaratorPhone: { type: String, required: true },
-  guaratorEmail: { type: String },
-  dateOfBirth: { type: Date, required: true },
-  city: { type: String, required: true },
-  state: { type: String },
-     zipCode: { type: String },
-  country: { type: String },
-  profileImg: { type: String },
+const csoSchema = new mongoose.Schema(
+  {
+    firstName: { type: String, required: true },
+    lastName: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    phone: { type: String, required: true },
+    branch: { type: String, required: true },
+    branchId: { type: String, required: true },
+    address: { type: String, required: true },
+    workId: { type: String, required: true },
+    password: { type: String, select: false },
+    guaratorName: { type: String, required: true },
+    guaratorAddress: { type: String, required: true },
+    guaratorPhone: { type: String, required: true },
+    guaratorEmail: { type: String },
+    dateOfBirth: { type: Date, required: true },
+    city: { type: String, required: true },
+    state: { type: String },
+    zipCode: { type: String },
+    country: { type: String },
+    profileImg: { type: String },
 
-  signature: { type: String },
- 
+    signature: { type: String },
+
     isActive: { type: Boolean, default: true },
-  remittance: [
-    {
-      amountCollected: { type: String },
-      amountPaid: { type: String },
-      image: { type: String },
-      date: { type: Date },
-      amountRemitted: { type: Number },
-      remark: { type: String },
-      resolvedIssue: { type: String, default: "" },
+    remittance: [
+      {
+        amountCollected: { type: String },
+        amountPaid: { type: String },
+        image: { type: String },
+        date: { type: Date },
+        amountRemitted: { type: Number },
+        remark: { type: String },
+        resolvedIssue: { type: String, default: "" },
+      },
+    ],
 
-    },
-  ],
-
-   overdueRecords: [
-    {
-      month: { type: Number }, // 1-12
-      year: { type: Number },
-      value: { type: Number, default: 0 }, // total overdue for the month
-      updatedAt: { type: Date, default: Date.now }
-    }
-  ],
+    overdueRecords: [
+      {
+        month: { type: Number }, // 1-12
+        year: { type: Number },
+        value: { type: Number, default: 0 }, // total overdue for the month
+        updatedAt: { type: Date, default: Date.now },
+      },
+    ],
 
     recoveryRecord: [
-    {
-      month: { type: Number }, // 1-12
-      year: { type: Number },
-      value: { type: Number, default: 0 }, // total recovery for the month
-      updatedAt: { type: Date, default: Date.now }
-    }
-  ],
+      {
+        month: { type: Number }, // 1-12
+        year: { type: Number },
+        value: { type: Number, default: 0 }, // total recovery for the month
+        updatedAt: { type: Date, default: Date.now },
+      },
+    ],
 
     overShootLoans: [
-    {
-      month: { type: Number }, // 1-12
-      year: { type: Number },
-      value: { type: Number, default: 0 }, // total overshoot for the month
-      countNow: { type: Number, default: 0 },
-      shootCount: { type: Number, default: 0 },
-      updatedAt: { type: Date, default: Date.now }
-    }
-  ],
-  overshootPaid: [
-    {
-     
-      amount: { type: Number, default: 0 }, // total overshoot for the month
-      paidAt: { type: Date, default: Date.now },
+      {
+        month: { type: Number }, // 1-12
+        year: { type: Number },
+        value: { type: Number, default: 0 }, // total overshoot for the month
+        countNow: { type: Number, default: 0 },
+        shootCount: { type: Number, default: 0 },
+        updatedAt: { type: Date, default: Date.now },
+      },
+    ],
+    overshootPaid: [
+      {
+        amount: { type: Number, default: 0 }, // total overshoot for the month
+        paidAt: { type: Date, default: Date.now },
+      },
+    ],
 
-    }
-  ],
-
-  // New fields for targets
+    // New fields for targets
     defaultingTarget: { type: Number, default: 0 }, // Default target for all CSOs
 
-  loanTarget: { type: Number, default: 0 }, // Individual loan target for the CSO
-  disbursementTarget: { type: Number, default: 0 },
-}, { timestamps: true });
+    loanTarget: { type: Number, default: 0 }, // Individual loan target for the CSO
+    disbursementTarget: { type: Number, default: 0 },
+  },
+  { timestamps: true }
+);
 
 csoSchema.pre("save", async function hashPassword(next) {
   if (!this.isModified("password") || !this.password) {

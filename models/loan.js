@@ -25,8 +25,9 @@ const dailyPaymentSchema = new mongoose.Schema(
 const loanSchema = new mongoose.Schema(
   {
     csoId: { type: mongoose.Schema.Types.ObjectId, ref: "CSO", required: true },
-    csoSignature: { type: String },
+    csoSignature: { type: String, required: true },
     branch: { type: String, required: true },
+    branchId: { type: String, required: true },
     csoName: { type: String, required: true },
     loanId: { type: String, required: true, unique: true },
     customerDetails: {
@@ -35,6 +36,7 @@ const loanSchema = new mongoose.Schema(
       dateOfBirth: { type: String },
       phoneOne: { type: String, required: true },
       address: { type: String, required: true },
+      nin: { type: String }, // Made optional - BVN will be primary
       bvn: { type: String, required: true },
       NextOfKin: { type: String, required: true },
       NextOfKinNumber: { type: String, required: true },
@@ -74,6 +76,13 @@ const loanSchema = new mongoose.Schema(
       relationship: { type: String, required: true },
       yearsKnown: { type: Number, required: true },
       signature: { type: String },
+    },
+    groupDetails: {
+      groupName: { type: String },
+      leaderName: { type: String },
+      address: { type: String },
+      groupId: { type: String },
+      mobileNo: { type: String },
     },
     guarantorFormPic: { type: String },
     pictures: {

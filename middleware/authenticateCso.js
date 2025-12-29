@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const CSO = require("../models/cso");
+const jwtSecret = require("../config/jwtSecret");
 
 async function authenticateCso(req, res, next) {
   try {
@@ -10,7 +11,7 @@ async function authenticateCso(req, res, next) {
     }
 
     const token = authHeader.split(" ")[1];
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    const payload = jwt.verify(token, jwtSecret);
 
     const cso = await CSO.findById(payload.id);
 
