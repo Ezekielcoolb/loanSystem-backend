@@ -5,9 +5,17 @@ const axios = require("axios");
 const dotenv = require('dotenv');
 const connectDB = require('./config/config');
 const path = require('path');
+const { scheduleCsoDelinquencyJob } = require('./jobs/csoDelinquencyJob');
 const app = express();
 dotenv.config();
-connectDB();
+
+connectDB()
+  .then(() => {
+    scheduleCsoDelinquencyJob();
+  })
+  .catch((error) => {
+    console.error('Database initialization failed:', error);
+  });
 
 // Middleware
 app.use(cors());
@@ -24,6 +32,8 @@ app.use(require("./routes/holidayRoutes"));
 app.use(require("./routes/adminPanelRoutes"));
 app.use(require("./routes/expenseRoutes"));
 app.use(require('./routes/uploadRoutes'));
+app.use(require("./routes/businessReportRoutes"));
+app.use(require("./routes/interestRoutes"));
 
 // Error handling
 app.use((err, req, res, next) => {
