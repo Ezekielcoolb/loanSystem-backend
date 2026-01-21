@@ -11,7 +11,7 @@ const jwtSecret = require("../config/jwtSecret");
 
 const router = express.Router();
 
-const FORM_AMOUNT_DEFAULT = 2000;
+const FORM_AMOUNT_DEFAULT = 3000;
 
 function generateToken(cso) {
   return jwt.sign({ id: cso._id, email: cso.email }, jwtSecret, {
@@ -427,174 +427,178 @@ function formatRemittanceEntry(csoDoc, remittanceDoc) {
 
 router.get("/api/admin/remittances", async (req, res) => {
   try {
+    const {
+      year,
+      month,
+      range,
+      page = 1,
+      limit = 20,
+      csoId,
+      date,
+      from,
+      to,
+    } = req.query;
+
+    const query = {};
+    const filters = {};
+
+    // Date Filtering Logic
+    let startDate, endDate;
     const now = new Date();
-    const queryYear = Number.parseInt(req.query.year, 10);
-    const queryMonth = Number.parseInt(req.query.month, 10);
-    const csoId = req.query.csoId;
-    const rangeParam = (req.query.range || "").toLowerCase();
-    const dateParam = req.query.date;
-    const fromParam = req.query.from;
-    const toParam = req.query.to;
 
-    const fallbackYear = Number.isFinite(queryYear)
-      ? queryYear
-      : now.getUTCFullYear();
-    const fallbackMonthIndex = Number.isFinite(queryMonth)
-      ? Math.min(Math.max(queryMonth - 1, 0), 11)
-      : now.getUTCMonth();
-
-    const today = normalizeLocalDate(new Date());
-    let startDate = null;
-    let endDate = null;
-
-    const parsedDateParam = normalizeLocalDate(dateParam);
-    const parsedFromParam = normalizeLocalDate(fromParam);
-    const parsedToParam = normalizeLocalDate(toParam);
-
-    if (rangeParam === "today") {
-      startDate = today;
-      endDate = addDaysLocal(today, 1);
-    } else if (rangeParam === "yesterday") {
-      endDate = today;
-      startDate = addDaysLocal(endDate, -1);
-    } else if (rangeParam === "week" || rangeParam === "thisweek") {
-      endDate = addDaysLocal(today, 1);
-      startDate = addDaysLocal(endDate, -7);
-    } else if (parsedDateParam) {
-      startDate = parsedDateParam;
-      endDate = addDaysLocal(parsedDateParam, 1);
-    }
-
-    if (parsedFromParam) {
-      startDate = parsedFromParam;
-      if (!parsedToParam) {
-        endDate = addDaysLocal(parsedFromParam, 1);
+    if (range === "today") {
+      startDate = new Date(now.setHours(0, 0, 0, 0));
+      endDate = new Date(now.setHours(23, 59, 59, 999));
+    } else if (range === "yesterday") {
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      startDate = new Date(yesterday.setHours(0, 0, 0, 0));
+      endDate = new Date(yesterday.setHours(23, 59, 59, 999));
+    } else if (range === "week") {
+      const firstDay = now.getDate() - now.getDay();
+      startDate = new Date(now.setDate(firstDay));
+      startDate.setHours(0, 0, 0, 0);
+      endDate = new Date();
+    } else if (range === "month") {
+      const y = year ? parseInt(year) : now.getFullYear();
+      const m = month ? parseInt(month) : now.getMonth() + 1;
+      startDate = new Date(y, m - 1, 1);
+      endDate = new Date(y, m, 0, 23, 59, 59, 999);
+    } else if (range === "custom") {
+      if (date) {
+        startDate = new Date(new Date(date).setHours(0, 0, 0, 0));
+        endDate = new Date(new Date(date).setHours(23, 59, 59, 999));
+      } else if (from && to) {
+        startDate = new Date(new Date(from).setHours(0, 0, 0, 0));
+        endDate = new Date(new Date(to).setHours(23, 59, 59, 999));
       }
+    } else {
+      // Default to "month" if nothing strictly matches
+      const y = year ? parseInt(year) : now.getFullYear();
+      const m = month ? parseInt(month) : now.getMonth() + 1;
+      startDate = new Date(y, m - 1, 1);
+      endDate = new Date(y, m, 0, 23, 59, 59, 999);
     }
 
-    if (parsedToParam) {
-      endDate = addDaysLocal(parsedToParam, 1);
-      if (!startDate) {
-        startDate = addDaysLocal(endDate, -1);
-      }
+    if (startDate && endDate) {
+      filters["remittance.date"] = { $gte: startDate, $lte: endDate };
     }
 
-    if (!startDate || !endDate) {
-      startDate = normalizeLocalDate(
-        new Date(fallbackYear, fallbackMonthIndex, 1)
-      );
-      endDate = normalizeLocalDate(
-        new Date(fallbackYear, fallbackMonthIndex + 1, 1)
-      );
+    if (csoId) {
+      query._id = csoId;
     }
 
-    if (startDate >= endDate) {
-      endDate = addDaysLocal(startDate, 1);
+    // Optimization: find only necessary CSOs
+    if (filters["remittance.date"]) {
+      query["remittance.date"] = filters["remittance.date"];
     }
 
-    const effectiveRange =
-      rangeParam ||
-      (parsedFromParam || parsedToParam || parsedDateParam
-        ? "custom"
-        : "month");
-
-    const pageParam = Number.parseInt(req.query.page, 10);
-    const limitParam = Number.parseInt(req.query.limit, 10);
-    const page = Math.max(1, Number.isFinite(pageParam) ? pageParam : 1);
-    const limit = Math.min(
-      100,
-      Math.max(5, Number.isFinite(limitParam) ? limitParam : 20)
+    const csos = await CSO.find(query).select(
+      "firstName lastName branch remittance"
     );
 
-    const csoFilter = csoId ? { _id: csoId } : {};
+    // Flatten and Normalize Remittances
+    let allRemittances = [];
+    csos.forEach((cso) => {
+      if (Array.isArray(cso.remittance)) {
+        cso.remittance.forEach((r) => {
+          const rDate = new Date(r.date);
+          if (
+            (!startDate || rDate >= startDate) &&
+            (!endDate || rDate <= endDate)
+          ) {
+            const item = r.toObject();
 
-    const csos = await CSO.find(csoFilter).select(
-      "firstName lastName email workId branch branchId remittance"
-    );
+            // Normalize Amount Collected (Legacy support: 'amount' vs 'amountCollected')
+            const effectiveAmountCollected =
+              item.amountCollected && item.amountCollected !== "0"
+                ? item.amountCollected
+                : item.amount || "0";
 
-    const entries = [];
+            // Normalize Amount Remitted (handle inconsistencies where it might be 0)
+            let effectiveAmountRemitted = Number(item.amountRemitted) || 0;
+            const partialsSum = (item.partialSubmissions || []).reduce(
+              (sum, p) => sum + (Number(p.amount) || 0),
+              0
+            );
+            const legacyAmountPaid = Number(item.amountPaid) || 0;
 
-    for (const cso of csos) {
-      if (!Array.isArray(cso?.remittance) || cso.remittance.length === 0) {
-        continue;
+            // Reconciliation Logic:
+            // Use the largest value among amountRemitted, partialsSum, and legacyAmountPaid
+            // because sometimes only one of these is correctly populated.
+            effectiveAmountRemitted = Math.max(
+              effectiveAmountRemitted,
+              partialsSum,
+              legacyAmountPaid
+            );
+
+            allRemittances.push({
+              id: r._id,
+              csoId: cso._id,
+              csoName: `${cso.firstName} ${cso.lastName}`,
+              branch: cso.branch,
+              ...item,
+              amountCollected: effectiveAmountCollected,
+              amountRemitted: effectiveAmountRemitted, // Overwrite with normalized value
+            });
+          }
+        });
       }
-
-      for (const record of cso.remittance) {
-        if (!remittanceFallsWithinRange(record, startDate, endDate)) {
-          continue;
-        }
-
-        const formatted = formatRemittanceEntry(cso, record);
-        if (formatted) {
-          entries.push(formatted);
-        }
-      }
-    }
-
-    entries.sort((first, second) => {
-      const firstTime = first?.submittedAt
-        ? new Date(first.submittedAt).getTime()
-        : first?.createdAt
-        ? new Date(first.createdAt).getTime()
-        : 0;
-      const secondTime = second?.submittedAt
-        ? new Date(second.submittedAt).getTime()
-        : second?.createdAt
-        ? new Date(second.createdAt).getTime()
-        : 0;
-      return secondTime - firstTime;
     });
 
-    const total = entries.length;
-    const totalPages = total > 0 ? Math.ceil(total / limit) : 1;
-    const safePage = Math.min(page, totalPages);
-    const sliceStart = total === 0 ? 0 : (safePage - 1) * limit;
-    const sliceEnd = total === 0 ? 0 : sliceStart + limit;
-    const paginated = total === 0 ? [] : entries.slice(sliceStart, sliceEnd);
+    // Sort
+    allRemittances.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    const summaryAccumulator = entries.reduce(
-      (acc, entry) => {
-        if (entry.status === "issue" || entry.hasIssue) {
-          acc.unresolvedIssues += 1;
-        } else if (entry.status === "resolved") {
-          acc.resolvedCount += 1;
-        } else {
-          acc.balancedCount += 1;
-        }
-        return acc;
-      },
-      { unresolvedIssues: 0, resolvedCount: 0, balancedCount: 0 }
-    );
+    // Summary Stats (on ALL items before pagination)
+    const summary = {
+      totalRemittances: allRemittances.length,
+      unresolvedIssues: 0,
+      resolvedCount: 0,
+      balancedCount: 0,
+    };
+
+    allRemittances.forEach((item) => {
+      const diff = Math.abs(
+        (Number(item.amountCollected) || 0) - (Number(item.amountRemitted) || 0)
+      );
+      const isBalanced = diff <= 0.5;
+      if (item.resolvedIssue) {
+        summary.resolvedCount++;
+      } else if (!isBalanced) {
+        summary.unresolvedIssues++;
+      } else {
+        summary.balancedCount++;
+      }
+    });
+
+    // Pagination
+    const total = allRemittances.length;
+    const totalPages = Math.ceil(total / limit);
+    const startIndex = (page - 1) * limit;
+    const paginatedItems = allRemittances.slice(startIndex, startIndex + limit);
 
     return res.json({
-      data: paginated,
+      data: paginatedItems,
       meta: {
-        page: safePage,
-        limit,
+        page: parseInt(page),
+        limit: parseInt(limit),
         total,
         totalPages,
-        year: fallbackYear,
-        month: fallbackMonthIndex + 1,
-        range: effectiveRange,
+        year: year ? parseInt(year) : now.getFullYear(),
+        month: month ? parseInt(month) : now.getMonth() + 1,
+        range,
+        summary,
         filter: {
-          startDate: startDate.toISOString().slice(0, 10),
-          endDate: addDaysLocal(endDate, -1).toISOString().slice(0, 10),
-          csoId: csoId || "",
+          startDate,
+          endDate,
+          csoId,
         },
-        summary: {
-          totalRemittances: total,
-          unresolvedIssues: summaryAccumulator.unresolvedIssues,
-          resolvedCount: summaryAccumulator.resolvedCount,
-          balancedCount: summaryAccumulator.balancedCount,
-        },
-        updatedAt: new Date().toISOString(),
       },
     });
   } catch (error) {
-    console.error("Error fetching admin remittances:", error);
     return res
       .status(500)
-      .json({ message: error.message || "Unable to load remittances" });
+      .json({ message: error.message || "Unable to fetch remittances" });
   }
 });
 
@@ -819,12 +823,13 @@ router.get("/api/csos/form-collection", authenticateCso, async (req, res) => {
 
     const loans = await Loan.find({
       csoId: req.cso._id,
-      status: { $in: ["active loan", "fully paid"] },
-      disbursedAt: {
+      // We want to see ALL loans created today, regardless of status (e.g. waiting for approval)
+      // status: { $in: ["active loan", "fully paid"] },
+      createdAt: {
         $gte: targetDate,
         $lt: nextDate,
       },
-    }).sort({ disbursedAt: 1 });
+    }).sort({ createdAt: 1 });
 
     const records = loans.map((loan) => {
       const customerName = [
@@ -1132,9 +1137,7 @@ router.get("/api/admin/csos/:csoId/dashboard-stats", async (req, res) => {
           const businessDays = countBusinessDays(dueStartDate, now);
 
           const expectedAmount =
-            businessDays >= 22
-              ? loanToBePaid
-              : businessDays * dailyAmount;
+            businessDays >= 22 ? loanToBePaid : businessDays * dailyAmount;
           const rawDue = expectedAmount - paidSoFar;
           const amountDue = rawDue > 0 ? rawDue : 0;
 
@@ -1500,15 +1503,19 @@ router.patch("/api/csos/me/password", authenticateCso, async (req, res) => {
 });
 
 // Post daily remittance
+// Post daily remittance
 router.post("/api/csos/remittance", authenticateCso, async (req, res) => {
   try {
-    const { amountCollected, amountPaid, image, date, remark, resolvedIssue } =
-      req.body;
+    const { amountCollected, amountPaid, image, date, remark } = req.body;
 
-    if (!amountCollected || !amountPaid || !date) {
-      return res.status(400).json({
-        message: "Amount collected, amount paid, and date are required",
-      });
+    // amountCollected corresponds to "amount" (expected amount) in the user's snippet
+    // amountPaid is the actual payment
+
+    const parsedAmountPaid = Number(amountPaid);
+    if (isNaN(parsedAmountPaid) || parsedAmountPaid <= 0) {
+      return res
+        .status(400)
+        .json({ message: "A valid amountPaid greater than 0 is required" });
     }
 
     const targetDate = normalizeDate(date);
@@ -1516,35 +1523,127 @@ router.post("/api/csos/remittance", authenticateCso, async (req, res) => {
       return res.status(400).json({ message: "Invalid date format" });
     }
 
+    // Check for existing entry
     const cso = await CSO.findById(req.cso._id);
     if (!cso) {
       return res.status(404).json({ message: "CSO not found" });
     }
 
-    const now = new Date();
-
-    const remittanceData = {
-      date: targetDate,
-      amountCollected: Number(amountCollected),
-      amountPaid: Number(amountPaid),
-      amountRemitted: toCurrencyNumber(amountPaid),
-      amountOnTeller: 0,
-      image: image || "",
-      remark: remark || "",
-      issueResolution: "",
-      resolvedIssue: resolvedIssue || "",
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // Always add a new remittance record to support multiple partial payments/images
-    cso.remittance.push(remittanceData);
-
-    await cso.save();
-    return res.json({
-      message: "Remittance posted successfully",
-      remittance: cso.remittance,
+    const existingEntry = cso.remittance.find((entry) => {
+      if (!entry.date) return false;
+      // Compare normalized dates
+      return normalizeDate(entry.date).getTime() === targetDate.getTime();
     });
+
+    if (existingEntry) {
+      // Updating existing entry
+      const parsedAmountCollected = Number(amountCollected);
+
+      // Update expected amount if provided and valid
+      if (!isNaN(parsedAmountCollected) && parsedAmountCollected > 0) {
+        existingEntry.amountCollected = parsedAmountCollected;
+      }
+
+      const expectedAmount = Number(existingEntry.amountCollected) || 0;
+
+      if (expectedAmount <= 0) {
+        return res
+          .status(400)
+          .json({ message: "Invalid expected amount in existing record" });
+      }
+
+      const currentPaid = Number(existingEntry.amountPaid) || 0;
+      const newTotalPaid = currentPaid + parsedAmountPaid;
+
+      if (newTotalPaid > expectedAmount) {
+        return res.status(400).json({
+          message: `Amount paid exceeds the expected amount. Remaining: ${Math.max(
+            expectedAmount - currentPaid,
+            0
+          )}`,
+          remaining: Math.max(expectedAmount - currentPaid, 0),
+        });
+      }
+
+      // Update main record
+      existingEntry.amountPaid = newTotalPaid;
+      // Update helper field for currency string if needed, or keep consistent
+      existingEntry.amountRemitted = newTotalPaid;
+
+      if (image) {
+        existingEntry.image = image;
+      }
+      if (remark) {
+        existingEntry.remark = remark;
+      }
+
+      existingEntry.updatedAt = new Date();
+
+      // Add to partial submissions
+      existingEntry.partialSubmissions = existingEntry.partialSubmissions || [];
+      existingEntry.partialSubmissions.push({
+        amount: parsedAmountPaid,
+        image: image || "",
+        submittedAt: new Date(),
+      });
+
+      await cso.save();
+
+      return res.json({
+        message: "Partial remittance recorded successfully",
+        remittance: cso.remittance, // Returning full array as per original, or we could return just the entry
+        updatedEntry: existingEntry,
+        remaining: expectedAmount - newTotalPaid,
+      });
+    } else {
+      // New Entry
+      const parsedAmountCollected = Number(amountCollected);
+      if (isNaN(parsedAmountCollected) || parsedAmountCollected <= 0) {
+        return res.status(400).json({
+          message: "A valid amountCollected is required for a new entry",
+        });
+      }
+
+      if (parsedAmountPaid > parsedAmountCollected) {
+        return res.status(400).json({
+          message: "Amount paid cannot exceed the expected collection amount",
+        });
+      }
+
+      const now = new Date();
+      const newEntry = {
+        date: targetDate,
+        amountCollected: parsedAmountCollected, // stored as String in schema? Schema says String default "0" but logic uses Number.
+        // Wait, Schema says: amountCollected: { type: String, default: "0" }
+        // So we should probably cast to string for storage but treat as number for logic.
+        amountPaid: parsedAmountPaid,
+        amountRemitted: parsedAmountPaid,
+        amountOnTeller: 0,
+        image: image || "",
+        remark: remark || "",
+        issueResolution: "",
+        resolvedIssue: "",
+        partialSubmissions: [
+          {
+            amount: parsedAmountPaid,
+            image: image || "",
+            submittedAt: now,
+          },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      cso.remittance.push(newEntry);
+      await cso.save();
+
+      return res.json({
+        message: "Remittance posted successfully",
+        remittance: cso.remittance,
+        newEntry: newEntry,
+        remaining: parsedAmountCollected - parsedAmountPaid,
+      });
+    }
   } catch (error) {
     return res
       .status(500)

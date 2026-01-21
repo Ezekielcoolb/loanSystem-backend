@@ -1,8 +1,8 @@
 const jwt = require("jsonwebtoken");
-const CSO = require("../models/cso");
+const Admin = require("../models/Admin");
 const jwtSecret = require("../config/jwtSecret");
 
-async function authenticateCso(req, res, next) {
+async function authenticateAdmin(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
 
@@ -13,13 +13,13 @@ async function authenticateCso(req, res, next) {
     const token = authHeader.split(" ")[1];
     const payload = jwt.verify(token, jwtSecret);
 
-    const cso = await CSO.findById(payload.id);
+    const admin = await Admin.findById(payload.id);
 
-    if (!cso) {
+    if (!admin) {
       return res.status(401).json({ message: "Invalid token" });
     }
 
-    req.cso = cso;
+    req.admin = admin;
     next();
   } catch (error) {
     if (
@@ -32,4 +32,4 @@ async function authenticateCso(req, res, next) {
   }
 }
 
-module.exports = authenticateCso;
+module.exports = authenticateAdmin;

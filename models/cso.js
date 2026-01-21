@@ -25,10 +25,18 @@ const csoSchema = new mongoose.Schema(
 
     signature: { type: String },
 
+    walletOne: {
+      performanceBonus: { type: Number, default: 0 },
+    },
+
+    walletTwo: {
+      amount: { type: Number, default: 0 },
+    },
     isActive: { type: Boolean, default: true },
     remittance: [
       {
         amountCollected: { type: String, default: "0" },
+        amount: { type: String, default: "0" }, // Legacy field support
         amountPaid: { type: String, default: "0" },
         image: { type: String },
         date: { type: Date },
@@ -37,6 +45,13 @@ const csoSchema = new mongoose.Schema(
         issueResolution: { type: String, default: "" },
         remark: { type: String },
         resolvedIssue: { type: String, default: "" },
+        partialSubmissions: [
+          {
+            amount: { type: Number },
+            image: { type: String },
+            submittedAt: { type: Date, default: Date.now },
+          },
+        ],
         createdAt: { type: Date, default: Date.now },
         updatedAt: { type: Date, default: Date.now },
       },
@@ -83,7 +98,7 @@ const csoSchema = new mongoose.Schema(
     loanTarget: { type: Number, default: 0 }, // Individual loan target for the CSO
     disbursementTarget: { type: Number, default: 0 },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 csoSchema.pre("save", async function hashPassword(next) {

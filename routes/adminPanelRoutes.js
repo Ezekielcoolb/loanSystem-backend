@@ -1,8 +1,11 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const AdminMember = require("../models/adminPanel");
+const authenticateAdmin = require("../middleware/authenticateAdmin");
 
 const router = express.Router();
+
+router.use("/api/admin-members", authenticateAdmin);
 
 const VALID_ROLES = [
   "Manager",
@@ -22,7 +25,9 @@ const serializeMember = (member) => {
 
 router.get("/api/admin-members", async (_req, res) => {
   try {
-    const members = await AdminMember.find().sort({ createdAt: -1 }).select("-password");
+    const members = await AdminMember.find()
+      .sort({ createdAt: -1 })
+      .select("-password");
     return res.json(members);
   } catch (error) {
     return res
@@ -61,7 +66,9 @@ router.post("/api/admin-members", async (req, res) => {
 
     const existing = await AdminMember.findOne({ email: email.toLowerCase() });
     if (existing) {
-      return res.status(409).json({ message: "An admin already exists with this email" });
+      return res
+        .status(409)
+        .json({ message: "An admin already exists with this email" });
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -90,7 +97,7 @@ router.patch("/api/admin-members/:id/suspend", async (req, res) => {
     const updated = await AdminMember.findByIdAndUpdate(
       req.params.id,
       { $set: { isSuspended: true } },
-      { new: true }
+      { new: true },
     );
 
     if (!updated) {
@@ -110,7 +117,7 @@ router.patch("/api/admin-members/:id/activate", async (req, res) => {
     const updated = await AdminMember.findByIdAndUpdate(
       req.params.id,
       { $set: { isSuspended: false } },
-      { new: true }
+      { new: true },
     );
 
     if (!updated) {

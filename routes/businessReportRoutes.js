@@ -213,15 +213,6 @@ router.get("/api/business-report/weekly-metrics", async (req, res) => {
 
     const nextMonthStart = normalizeStartOfDay(addDays(monthEnd, 1));
 
-    const monthlyLoans = await Loan.find({
-      status: { $in: ACTIVE_LOAN_STATUSES },
-      disbursedAt: { $gte: monthStart, $lt: nextMonthStart },
-    })
-      .select(
-        "disbursedAt loanDetails.amountDisbursed loanDetails.loanAppForm loanDetails.interest loanDetails.amountToBePaid"
-      )
-      .lean();
-
     const weeklyMetrics = segments.map((segment) => {
       const { days, map } = buildBusinessDays(
         segment.rangeStart,
@@ -248,33 +239,23 @@ router.get("/api/business-report/weekly-metrics", async (req, res) => {
       };
     });
 
+    const monthlyLoans = await Loan.find({
+      $or: [
+        { disbursedAt: { $gte: monthStart, $lt: nextMonthStart } },
+        { createdAt: { $gte: monthStart, $lt: nextMonthStart } },
+      ],
+    })
+      .select(
+        "disbursedAt createdAt loanDetails.amountDisbursed loanDetails.loanAppForm loanDetails.interest loanDetails.amountToBePaid"
+      )
+      .lean();
+
     for (const loan of monthlyLoans) {
       const disbursedAt = loan?.disbursedAt ? new Date(loan.disbursedAt) : null;
-      if (!disbursedAt || Number.isNaN(disbursedAt.getTime())) {
-        continue;
-      }
-      if (disbursedAt < monthStart || disbursedAt > monthEnd) {
-        continue;
-      }
+      const createdAt = loan?.createdAt ? new Date(loan.createdAt) : null;
 
-      const weekday = disbursedAt.getDay();
-      if (weekday === 0 || weekday === 6) {
-        // Skip weekend disbursements for weekly breakdown
-        continue;
-      }
-
-      const week = findWeekForDate(disbursedAt, segments);
-      if (!week) {
-        continue;
-      }
-
-      const weekData = weeklyMetrics[week.order];
-      if (!weekData) {
-        continue;
-      }
-
-      const amountDisbursed = Number(loan?.loanDetails?.amountDisbursed || 0);
       const loanAppForm = Number(loan?.loanDetails?.loanAppForm || 0);
+      const amountDisbursed = Number(loan?.loanDetails?.amountDisbursed || 0);
       const amountToBePaid = Number(loan?.loanDetails?.amountToBePaid || 0);
       let interest = Number(loan?.loanDetails?.interest);
 
@@ -289,30 +270,61 @@ router.get("/api/business-report/weekly-metrics", async (req, res) => {
         }
       }
 
-      const dayKey = formatDateKey(normalizeStartOfDay(disbursedAt));
-      const dayEntry = weekData._dayMap.get(dayKey);
+      // 1. Process Form Fees by CreatedAt
+      if (createdAt && createdAt >= monthStart && createdAt < nextMonthStart) {
+        const weekday = createdAt.getDay();
+        if (weekday !== 0 && weekday !== 6) {
+          const week = findWeekForDate(createdAt, segments);
+          if (week) {
+            const weekData = weeklyMetrics[week.order];
+            if (weekData && Number.isFinite(loanAppForm)) {
+              weekData.totalLoanAppForm += loanAppForm;
+              const dayKey = formatDateKey(normalizeStartOfDay(createdAt));
+              const dayEntry = weekData._dayMap.get(dayKey);
+              if (dayEntry) {
+                dayEntry.totalLoanAppForm += loanAppForm;
+              }
+            }
+          }
+        }
+      }
 
-      weekData.loanCount += 1;
-      if (Number.isFinite(amountDisbursed)) {
-        weekData.totalDisbursed += amountDisbursed;
-        if (dayEntry) {
-          dayEntry.totalDisbursed += amountDisbursed;
+      // 2. Process Disbursements by DisbursedAt
+      if (
+        disbursedAt &&
+        disbursedAt >= monthStart &&
+        disbursedAt < nextMonthStart
+      ) {
+        const weekday = disbursedAt.getDay();
+        if (weekday !== 0 && weekday !== 6) {
+          const week = findWeekForDate(disbursedAt, segments);
+          if (week) {
+            const weekData = weeklyMetrics[week.order];
+            if (weekData) {
+              const dayKey = formatDateKey(normalizeStartOfDay(disbursedAt));
+              const dayEntry = weekData._dayMap.get(dayKey);
+
+              weekData.loanCount += 1;
+              if (Number.isFinite(amountDisbursed)) {
+                weekData.totalDisbursed += amountDisbursed;
+                if (dayEntry) {
+                  dayEntry.totalDisbursed += amountDisbursed;
+                }
+              }
+
+              if (Number.isFinite(interest)) {
+                weekData.totalInterest += interest;
+                if (dayEntry) {
+                  dayEntry.totalInterest += interest;
+                }
+              }
+
+              if (dayEntry) {
+                dayEntry.loanCount += 1;
+              }
+            }
+          }
         }
-      }
-      if (Number.isFinite(loanAppForm)) {
-        weekData.totalLoanAppForm += loanAppForm;
-        if (dayEntry) {
-          dayEntry.totalLoanAppForm += loanAppForm;
-        }
-      }
-      if (Number.isFinite(interest)) {
-        weekData.totalInterest += interest;
-        if (dayEntry) {
-          dayEntry.totalInterest += interest;
-        }
-      }
-      if (dayEntry) {
-        dayEntry.loanCount += 1;
       }
     }
 
@@ -842,8 +854,9 @@ router.get("/api/business-report/monthly-summary", async (req, res) => {
     // Let's resolve this during the month loop.
 
     // Process Loan Balance with cumulative disbursement/payment logic
-    const monthEnds = Array.from({ length: 12 }, (_, index) =>
-      new Date(year, index + 1, 0, 23, 59, 59, 999)
+    const monthEnds = Array.from(
+      { length: 12 },
+      (_, index) => new Date(year, index + 1, 0, 23, 59, 59, 999)
     );
 
     const monthlyBalanceTotals = Array(12).fill(0);
@@ -857,7 +870,9 @@ router.get("/api/business-report/monthly-summary", async (req, res) => {
 
       const disbursedRaw = loan.disbursedAt ? new Date(loan.disbursedAt) : null;
       const disbursedAt =
-        disbursedRaw && !Number.isNaN(disbursedRaw.getTime()) ? disbursedRaw : null;
+        disbursedRaw && !Number.isNaN(disbursedRaw.getTime())
+          ? disbursedRaw
+          : null;
 
       const payments = Array.isArray(loanDetails.dailyPayment)
         ? loanDetails.dailyPayment
